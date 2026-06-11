@@ -1,0 +1,39 @@
+rules:
+  long_function:
+    enabled: true
+    max_lines: 30
+
+  duplicate_code:
+    enabled: true
+    min_block_lines: 6
+    similarity_threshold: 0.80
+    max_comparisons: 5000
+
+  complex_condition:
+    enabled: true
+    max_depth: 3
+
+  temporary_field:
+    enabled: true
+
+refactoring:
+  auto_apply: false
+  confirm_before_apply: true
+  backup: true
+
+ignore_patterns:
+  - __pycache__
+  - .git
+  - .venv
+  - venv
+  - env
+  - .tox
+  - node_modules
+  - "*.pyc"
+
+vcs:
+  skip_untracked: true
+
+output:
+  report_format: text
+  report_path: null
