@@ -16,8 +16,9 @@ from .refactor import ExtractMethodRefactor
 
 
 class Analyzer:
-    def __init__(self, config_path: Optional[str] = None):
-        self.config = load_config(config_path)
+    def __init__(self, config_path: Optional[str] = None, project_root: Optional[str] = None):
+        self.project_root = project_root
+        self.config = load_config(config_path=config_path, project_root=project_root)
         self.detectors = []
         self._init_detectors()
 
@@ -68,6 +69,8 @@ class Analyzer:
         )
         smell.is_safe_to_refactor = is_safe
         smell.safety_warnings = warnings
+        if not is_safe:
+            smell.skip_reason = "; ".join(warnings)
 
     def analyze_directory(self, directory: str) -> List[SmellResult]:
         all_results = []
@@ -145,11 +148,10 @@ class Analyzer:
 
         return change
 
-    def _detect_indent_level(self, lines, line_num):
-        if line_num < len(lines):
-            line = lines[line_num]
-            stripped = line.lstrip()
-            if stripped != line:
-                spaces = len(line) - len(stripped)
-                return spaces // 4
-        return 0
+    def validate_refactored_content(self, file_path: str, new_content: str) -> bool:
+        try:
+            ast.parse(new_content)
+            compile(new_content, file_path, "exec")
+            return True
+        except (SyntaxError, Exception):
+            return False

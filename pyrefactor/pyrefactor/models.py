@@ -1,4 +1,5 @@
 import difflib
+import ast
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from enum import Enum
@@ -47,6 +48,7 @@ class SmellResult:
     can_auto_refactor: bool = False
     is_safe_to_refactor: bool = True
     safety_warnings: List[str] = field(default_factory=list)
+    skip_reason: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -60,6 +62,7 @@ class SmellResult:
             "can_auto_refactor": self.can_auto_refactor,
             "is_safe_to_refactor": self.is_safe_to_refactor,
             "safety_warnings": self.safety_warnings,
+            "skip_reason": self.skip_reason,
             "metadata": self.metadata,
         }
 
@@ -146,6 +149,17 @@ class RefactoringProposal:
         )
         return "\n".join(diff)
 
+    def validate_syntax(self) -> Tuple[bool, str]:
+        try:
+            new_content = self.get_full_new_content()
+            ast.parse(new_content)
+            compile(new_content, self.file_path, "exec")
+            return True, ""
+        except SyntaxError as e:
+            return False, f"SyntaxError at line {e.lineno}: {e.msg}"
+        except Exception as e:
+            return False, str(e)
+
 
 @dataclass
 class RefactorReport:
@@ -157,6 +171,8 @@ class RefactorReport:
     refactored_changes: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     skipped_unsafe: int = 0
+    skipped_items: List[Dict[str, Any]] = field(default_factory=list)
+    syntax_validation_failures: List[Dict[str, Any]] = field(default_factory=list)
 
     def add_smell(self, smell: SmellResult):
         self.total_smells += 1
@@ -164,7 +180,7 @@ class RefactorReport:
             self.smells_by_type[smell.smell_type] = 0
         self.smells_by_type[smell.smell_type] += 1
 
-    def add_refactoring(self, file_path: str, change: RefactoringChange, smell: SmellResult, diff_text: str = ""):
+    def add_refactoring(self, file_path: str, change: RefactoringChange, smell: SmellResult, diff_text: str = "", syntax_valid: bool = True):
         self.refactored_count += 1
         self.refactored_changes.append({
             "file_path": file_path,
@@ -180,4 +196,19 @@ class RefactorReport:
             "diff": diff_text,
             "safety_warnings": change.safety_warnings,
             "is_safe": change.is_safe,
+            "syntax_valid": syntax_valid,
+        })
+
+    def add_skipped(self, smell: SmellResult):
+        self.skipped_items.append({
+            "file_path": smell.location.file_path,
+            "smell_type": smell.smell_type.value,
+            "line": smell.location.start_line + 1,
+            "reason": smell.skip_reason or "; ".join(smell.safety_warnings) or "unsafe to refactor",
+        })
+
+    def add_syntax_failure(self, file_path: str, error_msg: str):
+        self.syntax_validation_failures.append({
+            "file_path": file_path,
+            "error": error_msg,
         })

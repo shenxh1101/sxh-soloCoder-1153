@@ -41,6 +41,8 @@ class ExtractMethodRefactor:
                 self.found_break = False
                 self.found_continue = False
                 self.found_yield = False
+                self.conditional_assigns: Dict[str, bool] = {}
+                self.unconditional_assigns: set = set()
 
             def visit_Return(self_detector, node):
                 self_detector.found_return = True
@@ -136,6 +138,9 @@ class ExtractMethodRefactor:
         body_indent = call_indent + "    "
 
         method_lines = [f"{method_indent}def {new_method_name}({param_str}):"]
+        if defined_in_block:
+            for var in sorted(defined_in_block):
+                method_lines.append(f"{body_indent}{var} = None")
         for dline in dedented_lines:
             method_lines.append(f"{body_indent}{dline}")
 

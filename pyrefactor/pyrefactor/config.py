@@ -48,9 +48,7 @@ DEFAULT_CONFIG = {
 CONFIG_FILE_NAMES = [".pyrefactor.yaml", "pyrefactor.yaml", ".pyrefactor.yml", "pyrefactor.yml"]
 
 
-def find_config_file(start_dir: str = None) -> str:
-    if start_dir is None:
-        start_dir = os.getcwd()
+def find_config_file(start_dir: str) -> str:
     current = os.path.abspath(start_dir)
     while True:
         for name in CONFIG_FILE_NAMES:
@@ -64,14 +62,24 @@ def find_config_file(start_dir: str = None) -> str:
     return None
 
 
-def load_config(config_path=None):
+def load_config(config_path=None, project_root=None):
     config = dict_deep_copy(DEFAULT_CONFIG)
-    if config_path is None:
-        config_path = find_config_file()
-    if config_path and os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as f:
-            user_config = yaml.safe_load(f) or {}
-        deep_merge(config, user_config)
+
+    if config_path is not None:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                user_config = yaml.safe_load(f) or {}
+            deep_merge(config, user_config)
+    else:
+        search_dir = project_root if project_root else os.getcwd()
+        if os.path.isfile(search_dir):
+            search_dir = os.path.dirname(search_dir)
+        auto_path = find_config_file(search_dir)
+        if auto_path and os.path.exists(auto_path):
+            with open(auto_path, "r", encoding="utf-8") as f:
+                user_config = yaml.safe_load(f) or {}
+            deep_merge(config, user_config)
+
     return config
 
 
