@@ -52,7 +52,22 @@ class Analyzer:
             except Exception:
                 continue
 
+        source_lines = source_code.splitlines(True)
+        for smell in results:
+            if smell.can_auto_refactor and smell.smell_type == SmellType.COMPLEX_CONDITION:
+                self._annotate_safety(smell, source_lines)
+
         return results
+
+    def _annotate_safety(self, smell: SmellResult, source_lines: List[str]):
+        refactor = ExtractMethodRefactor()
+        is_safe, warnings = refactor.check_safety(
+            lines=source_lines,
+            start_line=smell.location.start_line,
+            end_line=smell.location.end_line,
+        )
+        smell.is_safe_to_refactor = is_safe
+        smell.safety_warnings = warnings
 
     def analyze_directory(self, directory: str) -> List[SmellResult]:
         all_results = []

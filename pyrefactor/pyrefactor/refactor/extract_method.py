@@ -1,11 +1,94 @@
 import re
-from typing import List, Tuple, Set, Optional
 import ast
+from typing import List, Tuple, Set, Optional
 
 from ..models import RefactoringChange
 
+UNSAFE_NODES = (ast.Return, ast.Break, ast.Continue, ast.Yield, ast.YieldFrom)
+
 
 class ExtractMethodRefactor:
+
+    def check_safety(self, lines: List[str], start_line: int, end_line: int) -> Tuple[bool, List[str]]:
+        original_text_lines = [l.rstrip("\n") for l in lines[start_line:end_line + 1]]
+
+        base_indent = 0
+        if original_text_lines:
+            first = original_text_lines[0]
+            base_indent = len(first) - len(first.lstrip())
+
+        dedented_lines = []
+        for line in original_text_lines:
+            if line.strip():
+                if len(line) >= base_indent:
+                    dedented_lines.append(line[base_indent:])
+                else:
+                    dedented_lines.append(line.lstrip())
+            else:
+                dedented_lines.append("")
+
+        dedented_text = "\n".join(dedented_lines)
+        try:
+            tree = ast.parse(dedented_text)
+        except SyntaxError:
+            return False, ["Cannot parse the selected code block."]
+
+        warnings = []
+
+        class UnsafeVisitor(ast.NodeVisitor):
+            def __init__(self):
+                self.found_return = False
+                self.found_break = False
+                self.found_continue = False
+                self.found_yield = False
+
+            def visit_Return(self_detector, node):
+                self_detector.found_return = True
+                self_detector.generic_visit(node)
+
+            def visit_Break(self_detector, node):
+                self_detector.found_break = True
+                self_detector.generic_visit(node)
+
+            def visit_Continue(self_detector, node):
+                self_detector.found_continue = True
+                self_detector.generic_visit(node)
+
+            def visit_Yield(self_detector, node):
+                self_detector.found_yield = True
+                self_detector.generic_visit(node)
+
+            def visit_YieldFrom(self_detector, node):
+                self_detector.found_yield = True
+                self_detector.generic_visit(node)
+
+        visitor = UnsafeVisitor()
+        visitor.visit(tree)
+
+        if visitor.found_return:
+            warnings.append(
+                "Contains 'return' — extracting into a nested function will change "
+                "control flow: the return would only exit the nested function, "
+                "not the original enclosing function."
+            )
+        if visitor.found_break:
+            warnings.append(
+                "Contains 'break' — cannot be used inside a nested function "
+                "(will cause SyntaxError)."
+            )
+        if visitor.found_continue:
+            warnings.append(
+                "Contains 'continue' — cannot be used inside a nested function "
+                "(will cause SyntaxError)."
+            )
+        if visitor.found_yield:
+            warnings.append(
+                "Contains 'yield' — extracting into a nested function will change "
+                "the generator semantics of the enclosing function."
+            )
+
+        is_safe = len(warnings) == 0
+        return is_safe, warnings
 
     def extract(
         self,
@@ -73,6 +156,8 @@ class ExtractMethodRefactor:
 
         original_text = "\n".join(original_text_lines)
 
+        is_safe, safety_warnings = self.check_safety(lines, start_line, end_line)
+
         change = RefactoringChange(
             original_start_line=start_line,
             original_end_line=end_line,
@@ -81,7 +166,9 @@ class ExtractMethodRefactor:
             description=f"Extract method '{new_method_name}'",
             additional_insertions=[
                 (start_line, method_text + "\n")
-            ]
+            ],
+            safety_warnings=safety_warnings,
+            is_safe=is_safe,
         )
 
         return change

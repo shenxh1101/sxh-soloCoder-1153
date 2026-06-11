@@ -5,7 +5,8 @@ from typing import List, Optional
 
 from .analyzer import Analyzer
 from .models import SmellResult, RefactoringChange, RefactoringProposal, RefactorReport, SmellType
-from .report import ReportGenerator
+from .report import ReportGenerator, filter_smells
+from .config import find_config_file, generate_init_config
 
 
 def main():
@@ -14,11 +15,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  pyrefactor init
   pyrefactor check myfile.py
   pyrefactor check ./src/
+  pyrefactor check ./src/ --severity warning --auto-refactorable-only
   pyrefactor check ./src/ --config .pyrefactor.yaml
   pyrefactor refactor ./src/ --auto --backup
   pyrefactor refactor ./src/ --preview
+  pyrefactor refactor ./src/ --patch-only --patch-output changes.patch
         """,
     )
 
@@ -27,6 +31,14 @@ Examples:
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    init_parser = subparsers.add_parser("init", help="Generate a default configuration file")
+    init_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="Directory to create the config file in (default: current directory)",
+    )
 
     check_parser = subparsers.add_parser("check", help="Check for code smells")
     check_parser.add_argument(
@@ -47,6 +59,16 @@ Examples:
     )
     check_parser.add_argument(
         "--rule", "-r", action="append", help="Run only specific rules", default=None
+    )
+    check_parser.add_argument(
+        "--severity", "-s",
+        choices=["error", "warning", "info"],
+        default=None,
+        help="Minimum severity level to report (error > warning > info)",
+    )
+    check_parser.add_argument(
+        "--auto-refactorable-only", action="store_true",
+        help="Only report smells that can be automatically refactored",
     )
 
     refactor_parser = subparsers.add_parser(
@@ -83,6 +105,24 @@ Examples:
     refactor_parser.add_argument(
         "--rule", "-r", action="append", help="Run only specific rules", default=None
     )
+    refactor_parser.add_argument(
+        "--severity", "-s",
+        choices=["error", "warning", "info"],
+        default=None,
+        help="Minimum severity level to report (error > warning > info)",
+    )
+    refactor_parser.add_argument(
+        "--auto-refactorable-only", action="store_true",
+        help="Only report smells that can be automatically refactored",
+    )
+    refactor_parser.add_argument(
+        "--patch-only", action="store_true",
+        help="Generate patch file only, do not modify source files",
+    )
+    refactor_parser.add_argument(
+        "--patch-output", default=None,
+        help="Path to save the patch file (default: pyrefactor.patch)",
+    )
 
     args = parser.parse_args()
 
@@ -90,10 +130,25 @@ Examples:
         parser.print_help()
         sys.exit(1)
 
-    if args.command == "check":
+    if args.command == "init":
+        run_init(args)
+    elif args.command == "check":
         run_check(args)
     elif args.command == "refactor":
         run_refactor(args)
+
+
+def run_init(args):
+    target = args.directory
+    try:
+        config_path = generate_init_config(target)
+        print(f"Configuration file created: {config_path}")
+        print(f"")
+        print(f"You can now run 'pyrefactor check' or 'pyrefactor refactor'")
+        print(f"and it will automatically use this configuration file.")
+    except (IOError, OSError) as e:
+        print(f"Error: Failed to create config file: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _should_skip_untracked(file_path: str, skip_untracked: bool) -> bool:
@@ -137,6 +192,12 @@ def run_check(args):
     else:
         print(f"Error: Path not found: {path}", file=sys.stderr)
         sys.exit(1)
+
+    smells = filter_smells(
+        smells,
+        min_severity=args.severity,
+        auto_refactorable_only=args.auto_refactorable_only,
+    )
 
     report = RefactorReport()
     files_set = set()
@@ -193,6 +254,13 @@ def run_refactor(args):
         print(f"Error: Path not found: {path}", file=sys.stderr)
         sys.exit(1)
 
+    smells_before_filter = smells
+    smells = filter_smells(
+        smells,
+        min_severity=args.severity,
+        auto_refactorable_only=args.auto_refactorable_only,
+    )
+
     report = RefactorReport()
     files_set = set()
     for smell in smells:
@@ -202,9 +270,13 @@ def run_refactor(args):
     report.files_with_smells = len(files_set)
 
     refactoring_changes = {}
+    skipped_unsafe = 0
 
     auto_refactorable = [s for s in smells if s.can_auto_refactor]
     for smell in auto_refactorable:
+        if not smell.is_safe_to_refactor:
+            skipped_unsafe += 1
+            continue
         change = analyzer.create_refactoring(smell, smell.location.file_path)
         if change:
             file_path = smell.location.file_path
@@ -212,42 +284,59 @@ def run_refactor(args):
                 refactoring_changes[file_path] = []
             refactoring_changes[file_path].append((change, smell))
 
-    if args.preview:
-        _show_preview(refactoring_changes)
+    report.skipped_unsafe = skipped_unsafe
+
+    if args.patch_only:
+        patch_output = args.patch_output or "pyrefactor.patch"
+        generator = ReportGenerator(report)
+        patch_text = generator.generate_patch(refactoring_changes)
+        with open(patch_output, "w", encoding="utf-8") as f:
+            f.write(patch_text)
+        print(f"Patch file saved to {patch_output}")
+        print(f"No source files were modified.")
+    elif args.preview:
+        _show_preview(refactoring_changes, skipped_unsafe)
     elif args.auto:
-        _apply_refactoring(refactoring_changes, args.backup, report)
+        _apply_refactoring(refactoring_changes, args.backup, report, args.patch_output)
     else:
         if refactoring_changes:
-            _show_preview(refactoring_changes)
+            _show_preview(refactoring_changes, skipped_unsafe)
             response = input("\nApply these changes? [y/N]: ").strip().lower()
             if response == "y":
-                _apply_refactoring(refactoring_changes, args.backup, report)
+                _apply_refactoring(refactoring_changes, args.backup, report, args.patch_output)
             else:
                 print("Refactoring cancelled.")
         else:
-            print("No auto-refactorable smells found.")
+            if skipped_unsafe > 0:
+                print(f"No auto-refactorable smells found ({skipped_unsafe} unsafe refactorings were skipped).")
+            else:
+                print("No auto-refactorable smells found.")
 
-    generator = ReportGenerator(report)
-    if args.format == "json":
-        output = generator.generate_json(smells, refactoring_changes)
-    else:
-        output = generator.generate_text(smells, refactoring_changes)
+    if not args.patch_only:
+        generator = ReportGenerator(report)
+        if args.format == "json":
+            output = generator.generate_json(smells, refactoring_changes)
+        else:
+            output = generator.generate_text(smells, refactoring_changes)
 
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(output)
-        print(f"Report saved to {args.output}")
-    else:
-        print(output)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(output)
+            print(f"Report saved to {args.output}")
+        else:
+            print(output)
 
 
-def _show_preview(refactoring_changes):
+def _show_preview(refactoring_changes, skipped_unsafe=0):
     print("\n" + "=" * 70)
     print("  REFACTORING PREVIEW")
     print("=" * 70)
 
+    if skipped_unsafe > 0:
+        print(f"\n  [{skipped_unsafe} unsafe refactoring(s) were automatically skipped.]")
+
     if not refactoring_changes:
-        print("\nNo refactoring changes to preview.")
+        print("\nNo safe refactoring changes to preview.")
         return
 
     for file_path, changes in refactoring_changes.items():
@@ -263,13 +352,17 @@ def _show_preview(refactoring_changes):
         for change, smell in changes:
             print(f"  Action: {change.description}")
             print(f"  Smell:  {smell.smell_type.value} ({smell.message})")
+            if not change.is_safe:
+                print(f"  *** UNSAFE — will be skipped in auto mode ***")
+                for w in change.safety_warnings:
+                    print(f"  ! {w}")
         print(f"{'=' * 70}")
         print(proposal.get_diff())
 
     print("\n" + "=" * 70)
 
 
-def _apply_refactoring(refactoring_changes, backup, report):
+def _apply_refactoring(refactoring_changes, backup, report, patch_output=None):
     for file_path, changes in refactoring_changes.items():
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -301,6 +394,13 @@ def _apply_refactoring(refactoring_changes, backup, report):
         except (IOError, OSError) as e:
             report.errors.append(f"Failed to refactor {file_path}: {e}")
             print(f"Error refactoring {file_path}: {e}", file=sys.stderr)
+
+    if patch_output and refactoring_changes:
+        generator = ReportGenerator(report)
+        patch_text = generator.generate_patch(refactoring_changes)
+        with open(patch_output, "w", encoding="utf-8") as f:
+            f.write(patch_text)
+        print(f"Patch file saved to {patch_output}")
 
 
 if __name__ == "__main__":

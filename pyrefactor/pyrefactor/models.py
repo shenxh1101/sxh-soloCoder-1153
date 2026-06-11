@@ -1,7 +1,10 @@
 import difflib
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from enum import Enum
+
+
+SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 
 class SmellType(Enum):
@@ -42,6 +45,8 @@ class SmellResult:
     suggestion: Optional[str] = None
     refactor_suggestion: Optional[str] = None
     can_auto_refactor: bool = False
+    is_safe_to_refactor: bool = True
+    safety_warnings: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -53,6 +58,8 @@ class SmellResult:
             "suggestion": self.suggestion,
             "refactor_suggestion": self.refactor_suggestion,
             "can_auto_refactor": self.can_auto_refactor,
+            "is_safe_to_refactor": self.is_safe_to_refactor,
+            "safety_warnings": self.safety_warnings,
             "metadata": self.metadata,
         }
 
@@ -64,7 +71,9 @@ class RefactoringChange:
     original_text: str
     new_text: str
     description: str
-    additional_insertions: List[tuple] = field(default_factory=list)
+    additional_insertions: List[Tuple[int, str]] = field(default_factory=list)
+    safety_warnings: List[str] = field(default_factory=list)
+    is_safe: bool = True
 
     def to_summary(self) -> Dict[str, Any]:
         return {
@@ -76,6 +85,8 @@ class RefactoringChange:
                 {"position": pos, "text": text}
                 for pos, text in self.additional_insertions
             ],
+            "safety_warnings": self.safety_warnings,
+            "is_safe": self.is_safe,
         }
 
 
@@ -145,6 +156,7 @@ class RefactorReport:
     refactored_count: int = 0
     refactored_changes: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    skipped_unsafe: int = 0
 
     def add_smell(self, smell: SmellResult):
         self.total_smells += 1
@@ -166,4 +178,6 @@ class RefactorReport:
                 for pos, text in change.additional_insertions
             ],
             "diff": diff_text,
+            "safety_warnings": change.safety_warnings,
+            "is_safe": change.is_safe,
         })
