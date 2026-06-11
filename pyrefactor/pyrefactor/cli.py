@@ -308,19 +308,22 @@ def run_refactor(args):
     report.skipped_unsafe += skipped_unsafe_count
 
     if args.dry_run:
-        _run_dry_run(refactoring_changes, skipped_unsafe_smells, args, report, kept, skipped)
+        exit_code = _run_dry_run(refactoring_changes, skipped_unsafe_smells, args, report, kept, skipped)
+        sys.exit(exit_code)
     elif args.patch_only:
         _run_patch_only(refactoring_changes, skipped, args, report, kept)
     elif args.preview:
         _show_preview(refactoring_changes, skipped_unsafe_count)
     elif args.auto:
-        _apply_refactoring(refactoring_changes, args.backup, report, args.patch_output, skipped, kept)
+        exit_code = _apply_refactoring(refactoring_changes, args.backup, report, args.patch_output, skipped, kept)
+        sys.exit(exit_code)
     else:
         if refactoring_changes:
             _show_preview(refactoring_changes, skipped_unsafe_count)
             response = input("\nApply these changes? [y/N]: ").strip().lower()
             if response == "y":
-                _apply_refactoring(refactoring_changes, args.backup, report, args.patch_output, skipped, kept)
+                exit_code = _apply_refactoring(refactoring_changes, args.backup, report, args.patch_output, skipped, kept)
+                sys.exit(exit_code)
             else:
                 print("Refactoring cancelled.")
         else:
@@ -328,6 +331,16 @@ def run_refactor(args):
                 print(f"No auto-refactorable smells found ({skipped_unsafe_count} unsafe refactorings were skipped).")
             else:
                 print("No auto-refactorable smells found.")
+
+
+def _compute_exit_code(total_changes: int, skipped_count: int, syntax_fail_count: int) -> int:
+    if syntax_fail_count > 0:
+        return 3
+    if total_changes > 0:
+        return 1
+    if skipped_count > 0:
+        return 2
+    return 0
 
 
 def _run_dry_run(refactoring_changes, skipped_unsafe_smells, args, report, kept, skipped):
@@ -355,6 +368,8 @@ def _run_dry_run(refactoring_changes, skipped_unsafe_smells, args, report, kept,
         with open(patch_output, "w", encoding="utf-8") as f:
             f.write(patch_text)
 
+    total_changes = sum(len(v) for v in refactoring_changes.values())
+    syntax_fail_count = sum(1 for v in syntax_results.values() if not v)
     summary = gen.generate_dry_run_summary(refactoring_changes, len(all_skipped), syntax_results)
     print(summary)
 
@@ -366,6 +381,8 @@ def _run_dry_run(refactoring_changes, skipped_unsafe_smells, args, report, kept,
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(output)
         print(f"JSON report saved to {args.output}")
+
+    return _compute_exit_code(total_changes, len(all_skipped), syntax_fail_count)
 
 
 def _run_patch_only(refactoring_changes, skipped, args, report, kept):
@@ -424,6 +441,8 @@ def _apply_refactoring(refactoring_changes, backup, report, patch_output=None,
                        skipped: Optional[List[SmellResult]] = None,
                        kept: Optional[List[SmellResult]] = None):
     syntax_results: Dict[str, bool] = {}
+    applied_count = 0
+    skipped_syntax_count = 0
 
     for file_path, changes in refactoring_changes.items():
         try:
@@ -453,11 +472,13 @@ def _apply_refactoring(refactoring_changes, backup, report, patch_output=None,
                 report.add_syntax_failure(file_path, f"SyntaxError at line {e.lineno}: {e.msg}")
                 print(f"SKIPPED {file_path}: syntax error after refactoring — {e.msg}")
                 print(f"  Original file preserved. Check the diff manually.")
+                skipped_syntax_count += 1
                 continue
             except Exception as e:
                 syntax_ok = False
                 report.add_syntax_failure(file_path, str(e))
                 print(f"SKIPPED {file_path}: validation error — {e}")
+                skipped_syntax_count += 1
                 continue
 
             syntax_results[file_path] = syntax_ok
@@ -469,6 +490,7 @@ def _apply_refactoring(refactoring_changes, backup, report, patch_output=None,
             for change, smell in changes:
                 report.add_refactoring(file_path, change, smell, diff_text, syntax_valid=syntax_ok)
 
+            applied_count += 1
             print(f"Refactored: {file_path}  syntax={'PASS' if syntax_ok else 'FAIL'}")
 
         except (IOError, OSError) as e:
@@ -482,6 +504,11 @@ def _apply_refactoring(refactoring_changes, backup, report, patch_output=None,
         with open(patch_output, "w", encoding="utf-8") as f:
             f.write(patch_text)
         print(f"Patch file saved to {patch_output}")
+
+    syntax_fail_count = sum(1 for v in syntax_results.values() if not v)
+    total_skipped = report.skipped_unsafe + skipped_syntax_count
+    total_changes = applied_count
+    return _compute_exit_code(total_changes, total_skipped, syntax_fail_count)
 
 
 if __name__ == "__main__":

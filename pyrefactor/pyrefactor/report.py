@@ -137,6 +137,10 @@ class ReportGenerator:
 
     def generate_json(self, smells: List[SmellResult], refactoring_changes: dict,
                       skipped_smells: Optional[List[SmellResult]] = None) -> str:
+        applied_count = self.report.refactored_count
+        skipped_count = self.report.skipped_unsafe
+        syntax_failure_count = len(self.report.syntax_validation_failures)
+
         data = {
             "generated_at": datetime.now().isoformat(),
             "summary": {
@@ -144,7 +148,10 @@ class ReportGenerator:
                 "files_with_smells": self.report.files_with_smells,
                 "total_smells": self.report.total_smells,
                 "refactored_count": self.report.refactored_count,
+                "applied_count": applied_count,
+                "skipped_count": skipped_count,
                 "skipped_unsafe": self.report.skipped_unsafe,
+                "syntax_failure_count": syntax_failure_count,
                 "syntax_failures": len(self.report.syntax_validation_failures),
                 "smells_by_type": {
                     st.value: count for st, count in self.report.smells_by_type.items()
@@ -201,6 +208,13 @@ class ReportGenerator:
             lines.append("")
 
             if changes:
+                changes_by_type: Dict[str, list] = {}
+                for c_pair in changes:
+                    st = c_pair[1].smell_type.value
+                    if st not in changes_by_type:
+                        changes_by_type[st] = []
+                    changes_by_type[st].append(c_pair)
+
                 with open(file_path, "r", encoding="utf-8") as f:
                     original_content = f.read()
                 from .models import RefactoringProposal
@@ -210,31 +224,38 @@ class ReportGenerator:
                     changes=[c for c, _ in changes],
                 )
 
-                for i, (change, smell) in enumerate(changes, 1):
-                    lines.append(f"  Change {i}: {change.description}")
-                    lines.append(f"    Smell:  {smell.smell_type.value}")
-                    lines.append(f"    Lines:  {change.original_start_line + 1} - {change.original_end_line + 1}")
-                    if not change.is_safe:
-                        lines.append(f"    *** UNSAFE — skipped from auto-apply ***")
-                        for w in change.safety_warnings:
-                            lines.append(f"    ! {w}")
+                for rule_type in sorted(changes_by_type.keys()):
+                    typed_changes = changes_by_type[rule_type]
+                    lines.append(f"  --- Applied: {rule_type} ---")
                     lines.append("")
 
-                    lines.append(f"    --- Original ({change.original_start_line + 1}-{change.original_end_line + 1}) ---")
-                    for orig_line in change.original_text.splitlines():
-                        lines.append(f"    - {orig_line}")
-                    lines.append("")
-
-                    lines.append(f"    +++ Replacement +++")
-                    for new_line in change.new_text.splitlines():
-                        lines.append(f"    + {new_line}")
-                    lines.append("")
-
-                    for pos, text in change.additional_insertions:
-                        lines.append(f"    +++ Inserted (before line {pos + 1}) +++")
-                        for ins_line in text.splitlines():
-                            lines.append(f"    + {ins_line}")
+                    for i, (change, smell) in enumerate(typed_changes, 1):
+                        change_num = sum(1 for rt in sorted(changes_by_type.keys()) if rt < rule_type)
+                        change_num += i
+                        lines.append(f"  Change {change_num}: {change.description}")
+                        lines.append(f"    Smell:  {smell.smell_type.value}")
+                        lines.append(f"    Lines:  {change.original_start_line + 1} - {change.original_end_line + 1}")
+                        if not change.is_safe:
+                            lines.append(f"    *** UNSAFE — skipped from auto-apply ***")
+                            for w in change.safety_warnings:
+                                lines.append(f"    ! {w}")
                         lines.append("")
+
+                        lines.append(f"    --- Original ({change.original_start_line + 1}-{change.original_end_line + 1}) ---")
+                        for orig_line in change.original_text.splitlines():
+                            lines.append(f"    - {orig_line}")
+                        lines.append("")
+
+                        lines.append(f"    +++ Replacement +++")
+                        for new_line in change.new_text.splitlines():
+                            lines.append(f"    + {new_line}")
+                        lines.append("")
+
+                        for pos, text in change.additional_insertions:
+                            lines.append(f"    +++ Inserted (before line {pos + 1}) +++")
+                            for ins_line in text.splitlines():
+                                lines.append(f"    + {ins_line}")
+                            lines.append("")
 
                 lines.append(f"  --- Unified Diff for {file_path} ---")
                 for diff_line in proposal.get_diff().splitlines():
@@ -244,11 +265,20 @@ class ReportGenerator:
             if skipped_items:
                 file_skipped = [s for s in skipped_items if s.location.file_path == file_path]
                 if file_skipped:
-                    lines.append(f"  --- Skipped in {file_path} ---")
+                    skipped_by_type: Dict[str, list] = {}
                     for s in file_skipped:
-                        reason = s.skip_reason or "; ".join(s.safety_warnings) or "unsafe"
-                        lines.append(f"  * line {s.location.start_line + 1}: {reason}")
-                    lines.append("")
+                        st = s.smell_type.value
+                        if st not in skipped_by_type:
+                            skipped_by_type[st] = []
+                        skipped_by_type[st].append(s)
+
+                    for rule_type in sorted(skipped_by_type.keys()):
+                        typed_skipped = skipped_by_type[rule_type]
+                        lines.append(f"  --- Skipped: {rule_type} ---")
+                        for s in typed_skipped:
+                            reason = s.skip_reason or "; ".join(s.safety_warnings) or "unsafe"
+                            lines.append(f"  * line {s.location.start_line + 1}: {reason}")
+                        lines.append("")
 
             lines.append("=" * 70)
             lines.append("")
