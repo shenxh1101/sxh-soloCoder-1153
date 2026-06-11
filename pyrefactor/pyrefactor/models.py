@@ -1,3 +1,4 @@
+import difflib
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from enum import Enum
@@ -63,27 +64,19 @@ class RefactoringChange:
     original_text: str
     new_text: str
     description: str
-    additional_insertions: List[tuple[int, str]] = field(default_factory=list)
+    additional_insertions: List[tuple] = field(default_factory=list)
 
-    def get_diff(self, file_path: str, original_lines: List[str]) -> str:
-        diff_lines = [f"--- {file_path}"]
-        diff_lines.append(f"+++ {file_path} (after refactoring)")
-        diff_lines.append(f"@@ -{self.original_start_line + 1},{self.original_end_line - self.original_start_line + 1} +...")
-
-        for line_num in range(self.original_start_line, self.original_end_line + 1):
-            if 0 <= line_num < len(original_lines):
-                diff_lines.append(f"-{original_lines[line_num]}")
-
-        new_lines = self.new_text.splitlines()
-        for line in new_lines:
-            diff_lines.append(f"+{line}")
-
-        for insert_line, insert_text in self.additional_insertions:
-            lines = insert_text.splitlines()
-            for line in lines:
-                diff_lines.append(f"+{line}")
-
-        return "\n".join(diff_lines)
+    def to_summary(self) -> Dict[str, Any]:
+        return {
+            "description": self.description,
+            "original_lines": f"{self.original_start_line + 1}-{self.original_end_line + 1}",
+            "original_text": self.original_text,
+            "new_text": self.new_text,
+            "insertions": [
+                {"position": pos, "text": text}
+                for pos, text in self.additional_insertions
+            ],
+        }
 
 
 @dataclass
@@ -95,34 +88,52 @@ class RefactoringProposal:
 
     def get_full_new_content(self) -> str:
         original_lines = self.original_content.splitlines()
-        insertions = []
+
+        inserts_before: Dict[int, List[str]] = {}
         for change in self.changes:
-            insertions.extend(
-                (pos, text) for pos, text in change.additional_insertions
-            )
+            for pos, text in change.additional_insertions:
+                if pos not in inserts_before:
+                    inserts_before[pos] = []
+                inserts_before[pos].append(text)
 
-        insertions.sort(key=lambda x: x[0], reverse=True)
+        replacements: Dict[tuple, str] = {}
+        for change in self.changes:
+            replacements[(change.original_start_line, change.original_end_line)] = change.new_text
 
-        new_lines = original_lines.copy()
-        for change in sorted(self.changes, key=lambda x: x.original_start_line, reverse=True):
-            del new_lines[change.original_start_line:change.original_end_line + 1]
-            change_lines = change.new_text.splitlines()
-            for i, line in enumerate(change_lines):
-                new_lines.insert(change.original_start_line + i, line)
+        new_lines = []
+        i = 0
+        while i < len(original_lines):
+            if i in inserts_before:
+                for text in inserts_before[i]:
+                    for txt_line in text.splitlines():
+                        new_lines.append(txt_line)
 
-        for insert_pos, insert_text in insertions:
-            lines = insert_text.splitlines()
-            for i, line in enumerate(reversed(lines)):
-                new_lines.insert(insert_pos, line)
+            found_replacement = False
+            for (start, end), new_text in replacements.items():
+                if i == start:
+                    new_lines.extend(new_text.splitlines())
+                    i = end + 1
+                    found_replacement = True
+                    break
+
+            if not found_replacement:
+                new_lines.append(original_lines[i])
+                i += 1
 
         return "\n".join(new_lines)
 
     def get_diff(self) -> str:
         original_lines = self.original_content.splitlines()
-        diff_parts = []
-        for change in self.changes:
-            diff_parts.append(change.get_diff(self.file_path, original_lines))
-        return "\n\n".join(diff_parts)
+        new_content = self.get_full_new_content()
+        new_lines = new_content.splitlines()
+        diff = difflib.unified_diff(
+            original_lines,
+            new_lines,
+            fromfile=self.file_path,
+            tofile=self.file_path + " (refactored)",
+            lineterm="",
+        )
+        return "\n".join(diff)
 
 
 @dataclass
@@ -141,11 +152,18 @@ class RefactorReport:
             self.smells_by_type[smell.smell_type] = 0
         self.smells_by_type[smell.smell_type] += 1
 
-    def add_refactoring(self, file_path: str, change: RefactoringChange, smell: SmellResult):
+    def add_refactoring(self, file_path: str, change: RefactoringChange, smell: SmellResult, diff_text: str = ""):
         self.refactored_count += 1
         self.refactored_changes.append({
             "file_path": file_path,
             "description": change.description,
             "original_lines": f"{change.original_start_line + 1}-{change.original_end_line + 1}",
             "smell_type": smell.smell_type.value,
+            "original_text": change.original_text,
+            "new_text": change.new_text,
+            "insertions": [
+                {"position": pos, "text": text}
+                for pos, text in change.additional_insertions
+            ],
+            "diff": diff_text,
         })

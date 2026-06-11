@@ -61,11 +61,25 @@ class ReportGenerator:
             lines.append("-" * 70)
             lines.append("")
 
-            for change in self.report.refactored_changes:
-                lines.append(f"  [File] {change['file_path']}")
-                lines.append(f"    Smell type: {change['smell_type']}")
-                lines.append(f"    Original lines: {change['original_lines']}")
-                lines.append(f"    Description: {change['description']}")
+            for idx, change in enumerate(self.report.refactored_changes, 1):
+                lines.append(f"  [{idx}] {change['file_path']}")
+                lines.append(f"      Smell type:  {change['smell_type']}")
+                lines.append(f"      Lines:       {change['original_lines']}")
+                lines.append(f"      Description: {change['description']}")
+                lines.append(f"")
+                lines.append(f"      --- Original ---")
+                for orig_line in change.get("original_text", "").splitlines():
+                    lines.append(f"      -{orig_line}")
+                lines.append(f"      +++ New (replacement) +++")
+                for new_line in change.get("new_text", "").splitlines():
+                    lines.append(f"      +{new_line}")
+                for insertion in change.get("insertions", []):
+                    lines.append(f"      +++ New (inserted before line {insertion['position'] + 1}) +++")
+                    for ins_line in insertion["text"].splitlines():
+                        lines.append(f"      +{ins_line}")
+                lines.append(f"      --- Diff ---")
+                for diff_line in change.get("diff", "").splitlines():
+                    lines.append(f"      {diff_line}")
                 lines.append("")
 
         if self.report.errors:

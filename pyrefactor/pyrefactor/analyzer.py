@@ -22,6 +22,7 @@ class Analyzer:
         self._init_detectors()
 
     def _init_detectors(self):
+        self.detectors.clear()
         if is_rule_enabled(self.config, "long_function"):
             self.detectors.append(LongFunctionDetector(self.config))
         if is_rule_enabled(self.config, "duplicate_code"):
@@ -115,14 +116,11 @@ class Analyzer:
         refactor = ExtractMethodRefactor()
         method_name = f"_extracted_condition_{start + 1}"
 
-        indent_level = self._detect_indent_level(source_lines, start)
-
         change = refactor.extract(
             lines=source_lines,
             start_line=start,
             end_line=end,
             new_method_name=method_name,
-            indent_level=indent_level,
         )
 
         change.description = (

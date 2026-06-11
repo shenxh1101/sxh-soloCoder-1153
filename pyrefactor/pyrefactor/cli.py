@@ -96,9 +96,24 @@ Examples:
         run_refactor(args)
 
 
+def _should_skip_untracked(file_path: str, skip_untracked: bool) -> bool:
+    if not skip_untracked:
+        return False
+    from .vcs import get_untracked_files, is_git_repository
+
+    parent_dir = os.path.dirname(os.path.abspath(file_path))
+    if not is_git_repository(parent_dir):
+        return False
+    untracked = get_untracked_files(parent_dir)
+    norm_path = os.path.normpath(os.path.abspath(file_path))
+    return norm_path in untracked
+
+
 def run_check(args):
     analyzer = Analyzer(args.config)
+    skip_untracked = analyzer.config.get("vcs", {}).get("skip_untracked", True)
     if args.no_vcs:
+        skip_untracked = False
         analyzer.config["vcs"]["skip_untracked"] = False
 
     if args.rule:
@@ -112,6 +127,10 @@ def run_check(args):
     path = os.path.abspath(args.path)
 
     if os.path.isfile(path):
+        if skip_untracked and _should_skip_untracked(path, skip_untracked):
+            print(f"Skipping untracked file: {path}")
+            print(f"Use --no-vcs to check all files.")
+            sys.exit(0)
         smells = analyzer.analyze_file(path)
     elif os.path.isdir(path):
         smells = analyzer.analyze_directory(path)
@@ -147,7 +166,9 @@ def run_check(args):
 
 def run_refactor(args):
     analyzer = Analyzer(args.config)
+    skip_untracked = analyzer.config.get("vcs", {}).get("skip_untracked", True)
     if args.no_vcs:
+        skip_untracked = False
         analyzer.config["vcs"]["skip_untracked"] = False
 
     if args.rule:
@@ -161,11 +182,13 @@ def run_refactor(args):
     path = os.path.abspath(args.path)
 
     if os.path.isfile(path):
+        if skip_untracked and _should_skip_untracked(path, skip_untracked):
+            print(f"Skipping untracked file: {path}")
+            print(f"Use --no-vcs to check all files.")
+            sys.exit(0)
         smells = analyzer.analyze_file(path)
-        file_paths = [path]
     elif os.path.isdir(path):
         smells = analyzer.analyze_directory(path)
-        file_paths = list(set(s.location.file_path for s in smells))
     else:
         print(f"Error: Path not found: {path}", file=sys.stderr)
         sys.exit(1)
@@ -190,12 +213,12 @@ def run_refactor(args):
             refactoring_changes[file_path].append((change, smell))
 
     if args.preview:
-        _show_preview(smells, refactoring_changes, analyzer)
+        _show_preview(refactoring_changes)
     elif args.auto:
         _apply_refactoring(refactoring_changes, args.backup, report)
     else:
         if refactoring_changes:
-            _show_preview(smells, refactoring_changes, analyzer)
+            _show_preview(refactoring_changes)
             response = input("\nApply these changes? [y/N]: ").strip().lower()
             if response == "y":
                 _apply_refactoring(refactoring_changes, args.backup, report)
@@ -218,7 +241,7 @@ def run_refactor(args):
         print(output)
 
 
-def _show_preview(smells, refactoring_changes, analyzer):
+def _show_preview(refactoring_changes):
     print("\n" + "=" * 70)
     print("  REFACTORING PREVIEW")
     print("=" * 70)
@@ -228,7 +251,6 @@ def _show_preview(smells, refactoring_changes, analyzer):
         return
 
     for file_path, changes in refactoring_changes.items():
-        print(f"\n--- {file_path}")
         with open(file_path, "r", encoding="utf-8") as f:
             original_content = f.read()
         proposal = RefactoringProposal(
@@ -236,6 +258,12 @@ def _show_preview(smells, refactoring_changes, analyzer):
             original_content=original_content,
             changes=[c for c, _ in changes],
         )
+        print(f"\n{'=' * 70}")
+        print(f"  File: {file_path}")
+        for change, smell in changes:
+            print(f"  Action: {change.description}")
+            print(f"  Smell:  {smell.smell_type.value} ({smell.message})")
+        print(f"{'=' * 70}")
         print(proposal.get_diff())
 
     print("\n" + "=" * 70)
@@ -260,12 +288,13 @@ def _apply_refactoring(refactoring_changes, backup, report):
             )
 
             new_content = proposal.get_full_new_content()
+            diff_text = proposal.get_diff()
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
             for change, smell in changes:
-                report.add_refactoring(file_path, change, smell)
+                report.add_refactoring(file_path, change, smell, diff_text)
 
             print(f"Refactored: {file_path}")
 
